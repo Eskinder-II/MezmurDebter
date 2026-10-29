@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="am">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#6c4cf1">
+<title>መዝሙር ኖት</title>
+<link rel="manifest" href="manifest.json">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="መዝሙር ኖት">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <header>
+    <button class="ibtn" id="back" onclick="goBack()" style="visibility:hidden">←</button>
+    <h1 id="title">መዝሙር ኖት</h1>
+    <button class="ibtn" id="sort" onclick="toggleSort()" style="display:none" title="ደርድር">⇅</button>
+  </header>
+  <main id="main"></main>
+  <nav>
+    <button data-tab="singers" onclick="setTab('singers')"><span class="i">🎤</span>መዝሙሮች</button>
+    <button data-tab="search" onclick="setTab('search')"><span class="i">🔍</span>ፍለጋ</button>
+    <button data-tab="favs" onclick="setTab('favs')"><span class="i">❤️</span>ተወዳጆች</button>
+    <button data-tab="settings" onclick="setTab('settings')"><span class="i">⚙️</span>ቅንብር</button>
+  </nav>
+  <div class="toast" id="toast"></div>
+</div>
+
+<script src="lyrics.js"></script>
+<script>
+
+/* ============ NOTES / BOOKMARKS ============ */
+function getSongNote(songId) {
+  const notes = JSON.parse(localStorage.getItem('mn_notes') || '{}');
+  return notes[songId] || '';
+}
+
+function saveSongNote(songId, text) {
+  const notes = JSON.parse(localStorage.getItem('mn_notes') || '{}');
+  notes[songId] = text.trim();
+  localStorage.setItem('mn_notes', JSON.stringify(notes));
+  toast('ማስታወሻ ተቀምጧል 📝');
+}
+
+/* ============ STATE & PREFERENCES ============ */
+const $ = s => document.querySelector(s);
+const collator = new Intl.Collator('am');
+let SONGS = [];
+let state = { tab: 'singers', singer: null, album: null, song: null, query: '', sort: 'asc' };
+let favs = JSON.parse(localStorage.getItem('mn_favs') || '[]');
+let history = JSON.parse(localStorage.getItem('mn_history') || '[]');
+let prefs = JSON.parse(localStorage.getItem('mn_prefs') || '{"theme":"light","bgImg":"","customBg":"","font":18,"wakelock":true}');
+
+let scrollInterval = null;
+let autoScrollSpeed = 0;
+let wakeLock = null;
+
+// Preset Background Images (Replace with your own links if wanted)
+const PRESET_BGS = [
+  { id: 'none', label: 'ነባሪ', url: '' },
+  { id: 'bg1', label: 'መስቀል', url: 'https://images.pexels.com/photos/18815484/pexels-photo-18815484.jpeg' },
+  { id: 'bg4', label: 'መስቀል2', url: 'https://cdn.prod.website-files.com/6705f4b15aee7ca914fff083/68fe348a65e23b84dc547486_the-power_global-scale.png' },
+  { id: 'bg5', label: 'መስቀል3', url: 'https://media.istockphoto.com/id/2161298305/photo/big-data-technology-background.jpg?b=1&s=612x612&w=0&k=20&c=nO9wSUjChQnKanduO3QqsY4d9ATYIwseCI3X809mV7Y=' },
+  { id: 'bg6', label: 'መስቀል4', url: 'https://images.pexels.com/photos/5559/cross-jesus-wedding-crucifix.jpg' },
+  { id: 'bg7', label: 'መስቀል5', url: 'https://images.pexels.com/photos/1615776/pexels-photo-1615776.jpeg' },
+  { id: 'bg8', label: 'መስቀል6', url: 'https://images.pexels.com/photos/2917373/pexels-photo-2917373.jpeg' },
+  { id: 'bg9', label: 'መስቀል7', url: 'https://images.pexels.com/photos/38440480/pexels-photo-38440480.jpeg' },
+  { id: 'bg10', label: 'መስቀል8', url: 'https://images.pexels.com/photos/38672002/pexels-photo-38672002.jpeg' },
+  { id: 'bg2', label: 'ወረቀት', url: 'https://images.unsplash.com/photo-1516962215378-7fa2e137ae93?auto=format&fit=crop&w=600&q=80' },
+  { id: 'bg3', label: 'ጨለማ', url: 'https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=600&q=80' }
+];
+
+const save = () => {
+  localStorage.setItem('mn_favs', JSON.stringify(favs));
+  localStorage.setItem('mn_history', JSON.stringify(history));
+  localStorage.setItem('mn_prefs', JSON.stringify(prefs));
+};
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+const toast = msg => {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._t);
+  t._t = setTimeout(() => t.classList.remove('show'), 1800);
+};
+
+const currentSong = () => SONGS.find(s => s.id === state.song);
+const albumSongs = album => sortBy(album.songs, 'title');
+const findSinger = id => DATA.find(s => s.id === id);
+const findAlbum = id => DATA.flatMap(s => s.albums).find(a => a.id === id);
+
+function init() {
+  DATA.forEach((s, si) => {
+    s.id = 's' + si;
+    s.albums.forEach((a, ai) => {
+      a.id = s.id + 'a' + ai;
+      a.singer = s;
+      a.songs.forEach((so, oi) => {
+        so.id = a.id + 'x' + oi;
+        so.album = a;
+        so.singer = s;
+      });
+    });
+  });
+  SONGS = DATA.flatMap(s => s.albums.flatMap(a => a.songs));
+}
+
+/* ============ WAKE LOCK & SCROLL ============ */
+async function requestWakeLock() {
+  if (!prefs.wakelock) return;
+  try { if ('wakeLock' in navigator && !wakeLock) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+function releaseWakeLock() { if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; } }
+
+function stopAutoScroll() { if (scrollInterval) { clearInterval(scrollInterval); scrollInterval = null; } autoScrollSpeed = 0; }
+function cycleAutoScroll() {
+  autoScrollSpeed = (autoScrollSpeed + 1) % 4;
+  if (scrollInterval) clearInterval(scrollInterval);
+  if (autoScrollSpeed === 0) {
+    scrollInterval = null;
+    toast('ማሸብለል ቆሟል ⏸️');
+  } else {
+    const speeds = { 1: 60, 2: 35, 3: 18 };
+    scrollInterval = setInterval(() => window.scrollBy({ top: 1, behavior: 'smooth' }), speeds[autoScrollSpeed]);
+    toast(`ማሸብለል: ${autoScrollSpeed}x ▶️`);
+  }
+  render();
+}
+
+/* ============ NAVIGATION & ACTIONS ============ */
+function setTab(t) { stopAutoScroll(); releaseWakeLock(); state = { ...state, tab: t, singer: null, album: null, song: null }; render(); }
+function openSinger(id) { state = { ...state, tab: 'singers', singer: id, album: null, song: null }; render(); }
+function openAlbum(id) { state.album = id; state.song = null; render(); }
+function openSong(id) {
+  stopAutoScroll();
+  state.song = id;
+  history = [id, ...history.filter(x => x !== id)].slice(0, 10);
+  save();
+  render();
+  window.scrollTo(0, 0);
+  requestWakeLock();
+}
+function toggleSort() { state.sort = state.sort === 'asc' ? 'desc' : 'asc'; render(); }
+function goBack() {
+  stopAutoScroll();
+  releaseWakeLock();
+  if (state.song) state.song = null;
+  else if (state.album) state.album = null;
+  else if (state.singer) state.singer = null;
+  render();
+}
+
+function toggleFav(id, e) {
+  if (e) e.stopPropagation();
+  if (favs.includes(id)) { favs = favs.filter(x => x !== id); toast('ከተወዳጆች ተወግዷል'); }
+  else { favs.push(id); toast('ወደ ተወዳጆች ተጨምሯል ❤️'); }
+  save(); render();
+}
+function clearFavs() { favs = []; save(); toast('ተወዳጆች ጸድተዋል'); render(); }
+function clearHistory() { history = []; save(); toast('ታሪክ ጸድቷል'); render(); }
+
+function setBgImg(url) { prefs.bgImg = url; prefs.customBg = ''; save(); render(); }
+function setCustomBg(url) { prefs.customBg = url; save(); render(); }
+function setFont(v) { prefs.font = +v; save(); const l = $('#lyr'); if (l) l.style.fontSize = v + 'px'; }
+
+function navSong(d) {
+  stopAutoScroll();ዝ
+  const s = currentSong();
+  const list = albumSongs(s.album);
+  const i = list.findIndex(x => x.id === s.id) + d;
+  if (i >= 0 && i < list.length) openSong(list[i].id);
+}
+
+function copyLyrics() {
+  navigator.clipboard.writeText(currentSong().lyrics).then(() => toast('ግጥሙ ተቀድቷል ✅')).catch(() => toast('መቅዳት አልተቻለም'));
+}
+function shareSong() {
+  const s = currentSong();
+  const text = `${s.title}\n${s.singer.name} · ${s.album.title}\n\n${s.lyrics}`;
+  if (navigator.share) navigator.share({ title: s.title, text }).catch(() => {});
+  else navigator.clipboard.writeText(text).then(() => toast('ተቀድቷል — ያጋሩ 🔗'));
+}
+
+const sortBy = (arr, key) => {
+  const a = [...arr].sort((x, y) => collator.compare(x[key], y[key]));
+  return state.sort === 'asc' ? a : a.reverse();
+};
+
+/* ============ VIEWS ============ */
+function card(icon, title, sub, onclick, extra = '') {
+  return `<div class="card" onclick="${onclick}">
+    <div class="av">${icon}</div>
+    <div class="info"><b>${esc(title)}</b><small>${esc(sub)}</small></div>${extra}
+  </div>`;
+}
+function songCard(s, sub) {
+  const fav = favs.includes(s.id);
+  return card('🎵', s.title, sub, `openSong('${s.id}')`,
+    `<button class="fav" onclick="toggleFav('${s.id}',event)">${fav ? '❤️' : '🤍'}</button>`);
+}
+
+function viewSingers() {
+  return `<div class="sec"><span>ዘማሪያን (${DATA.length})</span></div>` +
+    sortBy(DATA, 'name').map(s => card('🎤', s.name, `${s.albums.length} አልበም`, `openSinger('${s.id}')`)).join('');
+}
+
+function viewAlbums(s) {
+  return `<div class="sec"><span>💿 አልበሞች (${s.albums.length})</span></div>` +
+    sortBy(s.albums, 'title').map(a => card('💿', a.title, `${a.year} · ${a.songs.length} መዝሙር`, `openAlbum('${a.id}')`)).join('');
+}
+
+function viewSongs(a) {
+  return `<div class="sec"><span>${esc(a.singer.name)} · ${a.year}</span></div>` +
+    albumSongs(a).map(s => songCard(s, a.title)).join('');
+}
+
+// Reordered Lyric View with Top Control Pills
+function viewLyrics(s) {
+  const list = albumSongs(s.album);
+  const i = list.findIndex(x => x.id === s.id);
+  const isFav = favs.includes(s.id);
+  const scrollLabel = autoScrollSpeed === 0 ? '📜 ራስ-ማሸብለል' : `⏸️ ማሸብለል (${autoScrollSpeed}x)`;
+
+  return `
+    <div class="sec"><span>🎤 ${esc(s.singer.name)} · 💿 ${esc(s.album.title)}</span></div>
+    
+    <!-- Top Action Pills for Quick Control -->
+    <div class="song-header-bar">
+      <button class="pill" onclick="cycleAutoScroll()">${scrollLabel}</button>
+      <button class="pill" onclick="toggleFav('${s.id}')">${isFav ? '❤️ ተወዳጅ' : '🤍 ተወዳጅ'}</button>
+      <button class="pill" onclick="copyLyrics()">📋 ቅዳ</button>
+      <button class="pill" onclick="shareSong()">🔗 አጋራ</button>
+    </div>
+
+    <div class="size">
+      <span>Aa</span>
+      <input type="range" min="14" max="32" value="${prefs.font}" oninput="setFont(this.value)">
+    </div>
+
+    <!-- Lyrics Text Box -->
+    <div class="lyrics" id="lyr" style="font-size:${prefs.font}px">${esc(s.lyrics)}</div>
+
+<!-- Personal Note Section -->
+    <div style="margin: 14px 0;">
+      <label style="font-size:13px; color:var(--mu); font-weight:600; display:block; margin-bottom:6px;">
+        📝 የእኔ ማስታወሻ (Note):
+      </label>
+      <textarea 
+        id="noteInput" 
+        placeholder="እዚህ ጋር ስለ መዝሙሩ ማስታወሻ ይጻፉ..." 
+        style="width:100%; height:70px; padding:12px; border-radius:14px; border:1px solid var(--bd); background:var(--card); color:var(--tx); font-family:inherit; font-size:13px; resize:none; outline:none;"
+        onchange="saveSongNote('${s.id}', this.value)"
+      >${esc(getSongNote(s.id))}</textarea>
+    </div>
+
+    <!-- Bottom Navigation Bar -->
+    <div class="bar">
+      <button class="pill" onclick="navSong(-1)" ${i <= 0 ? 'disabled' : ''}>⬅️ ቀዳሚ</button>
+      <button class="pill primary" onclick="navSong(1)" ${i >= list.length - 1 ? 'disabled' : ''}>ቀጣይ ➡️</button>
+    </div>`;
+}
+
+function viewSearch() {
+  return `<input class="search" id="q" placeholder="መዝሙር፣ ዘማሪ ወይም የግጥም ቃል ፈልግ..." value="${esc(state.query)}" oninput="state.query=this.value; renderResults();">
+    <div id="results"></div>`;
+}
+
+function renderResults() {
+  const q = state.query.trim().toLowerCase();
+  const box = $('#results');
+  if (!box) return;
+  if (!q) { box.innerHTML = '<div class="empty">🔍 መዝሙር፣ ዘማሪ ወይም የግጥም ቃል ይፈልጉ</div>'; return; }
+  const hits = SONGS.filter(s => [s.title, s.album.title, s.singer.name, s.lyrics].some(x => x.toLowerCase().includes(q)));
+  box.innerHTML = hits.length
+    ? `<div class="sec"><span>${hits.length} ውጤት ተገኝቷል</span></div>` +
+      sortBy(hits, 'title').map(s => songCard(s, `${s.singer.name} · ${s.album.title}`)).join('')
+    : '<div class="empty">ምንም አልተገኘም 😕</div>';
+}
+
+function viewFavs() {
+  const list = SONGS.filter(s => favs.includes(s.id));
+  const recentList = history.map(id => SONGS.find(s => s.id === id)).filter(Boolean);
+  let html = `<div class="sec"><span>❤️ ተወዳጆች (${list.length})</span></div>`;
+  if (!list.length) html += '<div class="empty">❤️ ተወዳጅ መዝሙር የለም<br><small>ከመዝሙር ገጽ ላይ ልብ ይጫኑ</small></div>';
+  else html += sortBy(list, 'title').map(s => songCard(s, `${s.singer.name} · ${s.album.title}`)).join('');
+
+  if (recentList.length) {
+    html += `<div class="sec" style="margin-top:20px"><span>🕒 በቅርብ ጊዜ የታዩ</span><button class="danger-sm" onclick="clearHistory()">አጽዳ</button></div>`;
+    html += recentList.map(s => songCard(s, `${s.singer.name} · ${s.album.title}`)).join('');
+  }
+  return html;
+}
+
+function viewSettings() {
+  const activeBg = prefs.customBg || prefs.bgImg;
+  return `
+    <div class="setting col">
+      <span>🖼️ የጀርባ ምስል መምረጫ (Background Image)</span>
+      <div class="bg-grid">
+        ${PRESET_BGS.map(b => `
+          <div class="bg-opt ${activeBg===b.url ? 'active':''}" 
+               style="${b.url ? `background-image:url('${b.url}')`: 'background:#333'}" 
+               onclick="setBgImg('${b.url}')">
+            ${b.label}
+          </div>
+        `).join('')}
+      </div>
+      <small style="color:var(--mu); margin-top:8px">ወይም የራስዎን የምስል ሊንክ (URL) ያስገቡ:</small>
+      <input type="text" placeholder="https://example.com/image.jpg" value="${prefs.customBg || ''}" onchange="setCustomBg(this.value)">
+    </div>
+
+    <div class="setting">
+      <span>💡 ስክሪን እንዳይጠፋ (Keep Screen Awake)</span>
+      <input type="checkbox" ${prefs.wakelock !== false ? 'checked' : ''} onchange="prefs.wakelock=this.checked; save();">
+    </div>
+
+    <div class="setting col">
+      <span>🔤 የጽሑፍ መጠን: ${prefs.font}px</span>
+      <input type="range" min="14" max="32" value="${prefs.font}" oninput="setFont(this.value)">
+    </div>
+
+    <div class="setting">
+      <span>❤️ ${favs.length} ተወዳጅ</span>
+      <button class="danger" onclick="clearFavs()" ${favs.length ? '' : 'disabled'}>ሁሉንም አጽዳ</button>
+    </div>
+
+    <!-- ABOUT & CONTACT SECTION -->
+    <div class="about-box">
+      <h3>ስለ መተግበሪያው</h3>
+      <p><b>መዝሙር ኖት</b> የተለያዩ መንፈሳዊ መዝሙሮችን ግጥም በቀላሉ ለማግኘት፣ ለማንበብ እና ለማጋራት የተዘጋጀ መተግበሪያ ነው። ያለ ኢንተርኔት (Offline) ሙሉ በሙሉ ይሰራል።</p>
+      
+      <div class="social-links">
+        <a href="mailto:support@example.com" target="_blank" class="social-btn email">
+          <svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
+          ኢሜይል (Email)
+        </a>
+        <a href="https://t.me/your_telegram_channel" target="_blank" class="social-btn tg">
+          <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
+          ቴሌግራም (Telegram)
+        </a>
+        <a href="https://facebook.com/your_page" target="_blank" class="social-btn fb">
+          <svg viewBox="0 0 24 24"><path d="M22 12c0-5.52-4.48-10-10-10S2 6.48 2 12c0 4.84 3.44 8.87 8 9.8V15H7.5v-3H10V9.5C10 7.01 11.49 5.65 13.75 5.65c1.08 0 2.21.19 2.21.19v2.43h-1.25c-1.23 0-1.62.77-1.62 1.56V12h2.77l-.44 3h-2.33v6.8c4.56-.93 8-4.96 8-9.8z"/></svg>
+          ፌስቡክ (Facebook)
+        </a>
+        <a href="https://yourwebsite.com" target="_blank" class="social-btn web">
+          <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+          ድረ-ገጽ (Website)
+        </a>
+      </div>
+      <div class="empty">መዝሙር ኖት · v1.1<br><small>ግጥሞች ብቻ — ኦዲዮ የለም</small></div>
+    </div>`;
+    
+}
+
+/* ============ RENDER ============ */
+function render() {
+  const activeBg = prefs.customBg || prefs.bgImg;
+  document.body.style.setProperty('--bg-img', activeBg ? `url('${activeBg}')` : 'none');
+
+  const { tab, singer, album, song } = state;
+  const inDetail = !!(singer || album || song);
+
+  $('#back').style.visibility = inDetail ? 'visible' : 'hidden';
+  $('#sort').style.display = (!song && (tab === 'singers' || tab === 'favs')) ? '' : 'none';
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+
+  let title, html;
+  if (song) { const s = currentSong(); title = s.title; html = viewLyrics(s); }
+  else if (album) { const a = findAlbum(album); title = a.title; html = viewSongs(a); }
+  else if (singer && tab === 'singers') { const s = findSinger(singer); title = s.name; html = viewAlbums(s); }
+  else {
+    switch (tab) {
+      case 'search': title = 'ፍለጋ'; html = viewSearch(); break;
+      case 'favs': title = 'ተወዳጆች'; html = viewFavs(); break;
+      case 'settings': title = 'ቅንብር'; html = viewSettings(); break;
+      default: title = 'መዝሙሮች'; html = viewSingers();
+    }
+  }
+
+  $('#title').textContent = title;
+  $('#main').innerHTML = html;
+  if (tab === 'search' && !inDetail) renderResults();
+}
+
+/* ============ START ============ */
+init();
+render();
+/* ============ SERVICE WORKER (PWA) ============ */
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(err => console.log('PWA SW error:', err));
+  });
+}
+</script>
+</body>
+</html>
